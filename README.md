@@ -11,7 +11,7 @@ This project is part of a complete end-to-end trading system:
 
 **Platform:** Xilinx Kintex-7 (XC7K325T on ALINX AX7325B)
 **Technology:** Pure VHDL, custom TCP/UDP/SBE parsing
-**Status:** Hardware verified (NASDAQ + ASX operational, B3 SBE planned)
+**Status:** Hardware verified - WNS +0.922ns, 0 critical warnings, NASDAQ + ASX operational, B3 SBE planned
 **Role:** FPGA1 in 3-FPGA Trading Appliance Architecture  [planned]
 **Protocols:** NASDAQ ITCH (UDP), ASX ITCH (TCP), B3 UMDF/SBE (UDP multicast) [planned]
 
@@ -354,6 +354,27 @@ vivado -mode batch -source scripts/run_build.tcl
 
 ---
 
+## Resource Utilization (post-implementation, Feb 12 2026)
+
+| Resource | Used | Available | Util% |
+|----------|------|-----------|-------|
+| Slice LUTs | 2,008 | 203,800 | 0.99% |
+| LUT as Logic | 1,940 | 203,800 | 0.95% |
+| LUT as Distributed RAM | 64 | 64,000 | 0.10% |
+| Slice Registers | 1,945 | 407,600 | 0.48% |
+| BRAM Tiles | 1 | 445 | 0.22% |
+| F7 Muxes | 47 | 101,900 | 0.05% |
+| GTX Transceivers | 1 | 16 | 6.25% |
+| BUFG | 4 | 32 | 12.50% |
+| MMCM | 1 | 10 | 10.00% |
+
+**Timing Summary:**
+- sys_clk (200 MHz): WNS +1.994ns, 0 failing paths
+- tx_mmcm_clk1 (161.13 MHz): WNS +0.922ns, 0 failing paths
+- 0 TIMING-17 critical warnings, 0 unconstrained registers
+
+---
+
 ## Current Hardware Status (2026-01-23)
 
 ### Full Pipeline Verified
@@ -478,11 +499,8 @@ The following components from Project 33 are required for full FPGA1 build:
 
 ---
 
-**Status:** Development - 
-            - UDP RX and TX working reliably
-            - Aurora implementation not tested 
-            - ASX ITCH parser not tested
+**Status:** Hardware Verified - WNS +0.922ns, 0 critical warnings, all clock domains constrained
 **Created:** January 2026
+**Last Updated:** February 12, 2026
 **Author:** Adilson Dias
-
 **Target Board:** ALINX AX7325B (Kintex-7 XC7K325T-2FFG900I)

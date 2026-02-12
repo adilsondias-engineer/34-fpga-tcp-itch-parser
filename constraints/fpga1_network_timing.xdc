@@ -16,30 +16,28 @@
 create_clock -period 6.400 -name sfp_refclk [get_ports sfp_refclk_p]
 
 # ==============================================================================
-# GTX / MMCM Generated Clocks
+# GTX TXOUTCLK
 # ==============================================================================
 
-# TXOUTCLK (322.27 MHz) is auto-derived by Vivado from the GT primitive.
-# The MMCM outputs (tx_usrclk @ 322.27 MHz, tx_usrclk2 @ 161.13 MHz) are
-# auto-propagated by Vivado through the MMCME2_BASE. No manual create_clock
-# needed for these — Vivado derives them from the refclk -> QPLL -> TXOUTCLK chain.
+# GTX TXOUTCLK: 322.27 MHz (10.3125 Gbps / 32)
+# Must be explicitly constrained because GTXE2_CHANNEL is manually instantiated.
+# Vivado cannot trace through the analog QPLL to auto-discover this clock.
+# MMCM output clocks (tx_usrclk @ 322.27 MHz, tx_usrclk2 @ 161.13 MHz) are
+# auto-derived by Vivado from this primary clock.
+create_clock -period 3.103 -name gtx_txoutclk [get_pins sfp_gtx_inst/gtxe2_channel_inst/TXOUTCLK]
 
 # ==============================================================================
 # Clock Domain Crossings
 # ==============================================================================
 
-# System clock (200 MHz) is asynchronous to GT/MMCM-generated clocks
-set_clock_groups -asynchronous -quiet \
-    -group [get_clocks -of_objects [get_pins -quiet sfp_gtx_inst/tx_usrclk_bufg/O]] \
-    -group [get_clocks -of_objects [get_pins -quiet sfp_gtx_inst/tx_usrclk2_bufg/O]] \
-    -group [get_clocks sys_clk]
-
-# Reference clock to MMCM-generated clocks
-# (refclk feeds QPLL which feeds TXOUTCLK which feeds MMCM - related but
-#  treated as async for CDC paths through reset synchronizers)
-set_clock_groups -asynchronous -quiet \
-    -group [get_clocks sfp_refclk] \
-    -group [get_clocks -of_objects [get_pins -quiet sfp_gtx_inst/tx_usrclk2_bufg/O]]
+# All three clock domains are asynchronous to each other:
+#   sys_clk (200 MHz) - board oscillator (defined in pins.xdc)
+#   sfp_refclk (156.25 MHz) - SFP+ reference (QPLL input only)
+#   gtx_txoutclk (322.27 MHz) + MMCM-derived clocks (tx_usrclk, tx_usrclk2)
+set_clock_groups -asynchronous \
+    -group [get_clocks -include_generated_clocks sys_clk] \
+    -group [get_clocks -include_generated_clocks sfp_refclk] \
+    -group [get_clocks -include_generated_clocks gtx_txoutclk]
 
 # ==============================================================================
 # False Paths

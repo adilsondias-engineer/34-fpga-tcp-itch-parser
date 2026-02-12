@@ -170,6 +170,18 @@ architecture rtl of nasdaq_itch_parser is
         end case;
     end function;
 
+
+  attribute MAX_FANOUT : integer;
+  attribute MAX_FANOUT of shares_reg : signal is 16;
+  attribute MAX_FANOUT of exec_shares_reg  : signal is 16;
+  attribute MAX_FANOUT of cancel_shares_reg  : signal is 16;
+  attribute MAX_FANOUT of msg_valid  : signal is 16;
+  attribute MAX_FANOUT of msg_error  : signal is 16;
+  attribute MAX_FANOUT of msg_type  : signal is 16;
+  attribute MAX_FANOUT of current_msg_type  : signal is 16;
+  attribute MAX_FANOUT of order_ref_reg  : signal is 16;
+  attribute MAX_FANOUT of price_reg  : signal is 16;
+      
 begin
 
     -- Main parser state machine

@@ -120,7 +120,23 @@ architecture rtl of moldudp64_handler is
     signal out_end              : std_logic := '0';
     signal gap_detected         : std_logic := '0';
     signal msg_first_byte       : std_logic := '0';  -- Flag: next data byte gets start pulse
-
+    
+     -- Force replication
+    attribute MAX_FANOUT : integer;
+    attribute MAX_FANOUT of out_data: signal is 16;
+    attribute MAX_FANOUT of out_start: signal is 16;
+    attribute MAX_FANOUT of out_end: signal is 16;
+    attribute MAX_FANOUT of out_valid: signal is 16;
+    attribute MAX_FANOUT of itch_msg_valid: signal is 16;
+    attribute MAX_FANOUT of itch_msg_data: signal is 16;
+    attribute MAX_FANOUT of itch_msg_start: signal is 16;
+    attribute MAX_FANOUT of itch_msg_end: signal is 16;
+    attribute MAX_FANOUT of session_id: signal is 16;
+    attribute MAX_FANOUT of sequence_number: signal is 16;
+    attribute MAX_FANOUT of message_count: signal is 16;
+    attribute MAX_FANOUT of session_valid: signal is 16;
+    attribute MAX_FANOUT of sequence_gap: signal is 16;
+         
 begin
 
     -- Main processing

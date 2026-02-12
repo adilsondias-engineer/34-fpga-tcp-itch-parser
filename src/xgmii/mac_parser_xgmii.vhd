@@ -160,9 +160,41 @@ architecture rtl of mac_parser_xgmii is
     signal payload_start_byte : unsigned(7 downto 0) := (others => '0');  -- 14 + IHL*4
     signal payload_total      : unsigned(15 downto 0) := (others => '0'); -- ip_total_len - IHL*4
     signal payload_written    : unsigned(15 downto 0) := (others => '0');
+    signal remaining_r        : unsigned(15 downto 0) := (others => '0');  -- Pre-registered payload_total - payload_written
     signal frame_is_ipv4      : std_logic := '0';
     signal frame_active       : std_logic := '0';
     signal headers_valid      : std_logic := '0';  -- Set when IHL + total_len available
+
+    -- Fanout control for timing closure
+ --   attribute MAX_FANOUT : integer;
+    --attribute MAX_FANOUT of remaining_r : signal is 16;
+
+  --  attribute MAX_FANOUT of fifo_data  : signal is 16;
+  --  attribute MAX_FANOUT of fifo_keep : signal is 16;
+  --  attribute MAX_FANOUT of fifo_first : signal is 16;
+  --  attribute MAX_FANOUT of fifo_last : signal is 16;
+
+   -- attribute MAX_FANOUT of fifo_wr_ptr : signal is 16;
+  --  attribute MAX_FANOUT of fifo_rd_ptr : signal is 16;
+  --  attribute MAX_FANOUT of fifo_count : signal is 16;
+  --  attribute MAX_FANOUT of fifo_wr_en : signal is 16;
+   -- attribute MAX_FANOUT of fifo_rd_en : signal is 16;
+   -- attribute MAX_FANOUT of fifo_empty : signal is 16;
+   -- attribute MAX_FANOUT of fifo_full : signal is 16;
+
+    -- FIFO write data (from parser)
+   -- attribute MAX_FANOUT of wr_data : signal is 16;
+  ---  attribute MAX_FANOUT of wr_keep : signal is 16;
+  --  attribute MAX_FANOUT of wr_first  : signal is 16;
+  --  attribute MAX_FANOUT of wr_last : signal is 16;
+
+    -- FIFO read data (to serializer)
+  --  attribute MAX_FANOUT of rd_data  : signal is 16;
+  --  attribute MAX_FANOUT of rd_keep  : signal is 16;
+ --   attribute MAX_FANOUT of rd_first : signal is 16;
+ --   attribute MAX_FANOUT of rd_last  : signal is 16;
+
+
 
     -- Terminate detection
     signal terminate_in_word  : std_logic;
@@ -347,8 +379,12 @@ begin
         variable v_keep         : std_logic_vector(7 downto 0);
         variable v_bytes_this   : unsigned(15 downto 0);  -- Count of valid bytes (max 8)
         variable v_start_lane   : integer range 0 to 7;
-        variable v_remaining    : unsigned(15 downto 0);
         variable v_word_start   : unsigned(15 downto 0);  -- First byte offset of this word
+        -- Pre-decoded from remaining_r (shared across all states, eliminates duplicate logic)
+        variable v_rem_full     : std_logic;  -- '1' when remaining_r >= 8
+        variable v_rem_keep     : std_logic_vector(7 downto 0);  -- Keep mask from remaining_r
+        variable v_rem_bytes    : unsigned(3 downto 0);  -- Byte count (0-7 when partial, 8 when full)
+        variable v_term_keep    : std_logic_vector(7 downto 0);  -- Keep mask from terminate_lane
     begin
         if rising_edge(clk) then
             if rst = '1' then
@@ -370,11 +406,41 @@ begin
                 ip_dst_reg <= (others => '0');
                 payload_start_byte <= (others => '0');
                 payload_total <= (others => '0');
+                remaining_r <= (others => '0');
             else
                 -- Default
                 fifo_wr_en <= '0';
                 wr_first <= '0';
                 wr_last <= '0';
+
+                -- Pre-decode remaining_r (shared across all states)
+                if remaining_r(15 downto 3) /= "0000000000000" then
+                    v_rem_full := '1';
+                    v_rem_keep := "11111111";
+                    v_rem_bytes := to_unsigned(8, 4);
+                else
+                    v_rem_full := '0';
+                    v_rem_bytes := resize(remaining_r(2 downto 0), 4);
+                    case to_integer(remaining_r(2 downto 0)) is
+                        when 0 => v_rem_keep := "00000000";
+                        when 1 => v_rem_keep := "00000001";
+                        when 2 => v_rem_keep := "00000011";
+                        when 3 => v_rem_keep := "00000111";
+                        when 4 => v_rem_keep := "00001111";
+                        when 5 => v_rem_keep := "00011111";
+                        when 6 => v_rem_keep := "00111111";
+                        when 7 => v_rem_keep := "01111111";
+                        when others => v_rem_keep := "00000000";
+                    end case;
+                end if;
+
+                -- Pre-decode terminate keep mask
+                v_term_keep := (others => '0');
+                for i in 0 to 7 loop
+                    if i < terminate_lane then
+                        v_term_keep(i) := '1';
+                    end if;
+                end loop;
 
                 case parse_state is
                     when PS_IDLE =>
@@ -389,6 +455,7 @@ begin
                             word_cnt <= (others => '0');
                             frame_active <= '1';
                             payload_written <= (others => '0');
+                            remaining_r <= (others => '0');
                         end if;
 
                     when PS_HEADER =>
@@ -434,6 +501,9 @@ begin
                                 -- payload_total = ip_total_len - IHL*4
                                 payload_total <= unsigned(std_logic_vector'(xgmii_rxd(7 downto 0) & xgmii_rxd(15 downto 8))) -
                                     resize(unsigned(std_logic_vector'(std_logic_vector(ip_ihl_reg) & "00")), 16);
+                                -- remaining_r = payload_total (since payload_written = 0 at this point)
+                                remaining_r <= unsigned(std_logic_vector'(xgmii_rxd(7 downto 0) & xgmii_rxd(15 downto 8))) -
+                                    resize(unsigned(std_logic_vector'(std_logic_vector(ip_ihl_reg) & "00")), 16);
 
                                 -- Check EtherType
                                 if ethertype_reg = ETHERTYPE_IPV4 then
@@ -468,33 +538,35 @@ begin
                                     -- Payload starts in this word
                                     v_start_lane := to_integer(payload_start_byte(2 downto 0));
 
-                                    -- Check for terminate in this word
-                                    if terminate_in_word = '1' and terminate_lane <= 7 then
-                                        -- Terminate limits valid bytes
-                                        v_keep := (others => '0');
-                                        for i in 0 to 7 loop
-                                            if i >= v_start_lane and i < terminate_lane then
-                                                v_keep(i) := '1';
-                                            end if;
-                                        end loop;
-                                    else
-                                        v_keep := (others => '0');
+                                    -- Build keep mask using pre-decoded remaining
+                                    v_keep := (others => '0');
+                                    if v_rem_full = '1' then
+                                        -- remaining >= 8: all lanes from start valid
                                         for i in 0 to 7 loop
                                             if i >= v_start_lane then
                                                 v_keep(i) := '1';
                                             end if;
                                         end loop;
+                                    else
+                                        -- remaining < 8: 4-bit comparison (not 16-bit)
+                                        for i in 0 to 7 loop
+                                            if i >= v_start_lane then
+                                                if to_unsigned(i - v_start_lane, 4) < v_rem_bytes then
+                                                    v_keep(i) := '1';
+                                                end if;
+                                            end if;
+                                        end loop;
+                                    end if;
+                                    -- Bound by terminate
+                                    if terminate_in_word = '1' then
+                                        v_keep := v_keep and v_term_keep;
                                     end if;
 
-                                    -- Bound by payload_total
+                                    -- Popcount (tree, not serial)
                                     v_bytes_this := (others => '0');
                                     for i in 0 to 7 loop
                                         if v_keep(i) = '1' then
-                                            if payload_written + v_bytes_this < payload_total then
-                                                v_bytes_this := v_bytes_this + 1;
-                                            else
-                                                v_keep(i) := '0';
-                                            end if;
+                                            v_bytes_this := v_bytes_this + 1;
                                         end if;
                                     end loop;
 
@@ -502,7 +574,7 @@ begin
                                         wr_data <= xgmii_rxd;
                                         wr_keep <= v_keep;
                                         wr_first <= '1';
-                                        if payload_written + v_bytes_this >= payload_total then
+                                        if terminate_in_word = '1' or v_rem_full = '0' then
                                             wr_last <= '1';
                                             parse_state <= PS_DONE;
                                         else
@@ -510,6 +582,7 @@ begin
                                         end if;
                                         fifo_wr_en <= '1';
                                         payload_written <= payload_written + v_bytes_this;
+                                        remaining_r <= remaining_r - v_bytes_this;
                                     else
                                         -- No valid payload bytes (frame too short or early terminate)
                                         parse_state <= PS_DONE;
@@ -531,27 +604,67 @@ begin
                                     elsif v_word_start >= resize(payload_start_byte, 16) then
                                         -- Full payload word
                                         parse_state <= PS_PAYLOAD;
-                                        -- Process this word as payload (fall through logic below)
 
-                                        -- Compute keep for this word
-                                        v_remaining := payload_total - payload_written;
+                                        -- Full payload word (uses pre-decoded remaining variables)
                                         if terminate_in_word = '1' then
-                                            v_keep := (others => '0');
+                                            v_keep := v_term_keep and v_rem_keep;
+                                            v_bytes_this := (others => '0');
                                             for i in 0 to 7 loop
-                                                if i < terminate_lane and
-                                                   payload_written + to_unsigned(i, 16) < payload_total then
+                                                if v_keep(i) = '1' then
+                                                    v_bytes_this := v_bytes_this + 1;
+                                                end if;
+                                            end loop;
+                                        elsif v_rem_full = '1' then
+                                            v_keep := "11111111";
+                                            v_bytes_this := to_unsigned(8, 16);
+                                        else
+                                            v_keep := v_rem_keep;
+                                            v_bytes_this := resize(v_rem_bytes, 16);
+                                        end if;
+
+                                        if v_keep /= "00000000" then
+                                            wr_data <= xgmii_rxd;
+                                            wr_keep <= v_keep;
+                                            wr_first <= '1';  -- First payload write
+                                            if v_rem_full = '0' or
+                                               terminate_in_word = '1' then
+                                                wr_last <= '1';
+                                                parse_state <= PS_DONE;
+                                            end if;
+                                            fifo_wr_en <= '1';
+                                            payload_written <= payload_written + v_bytes_this;
+                                            remaining_r <= remaining_r - v_bytes_this;
+                                        else
+                                            parse_state <= PS_DONE;
+                                        end if;
+                                    else
+                                        -- Partial: payload starts mid-word
+                                        v_start_lane := to_integer(payload_start_byte(2 downto 0));
+                                        -- Build keep mask using pre-decoded remaining
+                                        v_keep := (others => '0');
+                                        if v_rem_full = '1' then
+                                            -- remaining >= 8: all lanes from start valid
+                                            for i in 0 to 7 loop
+                                                if i >= v_start_lane then
                                                     v_keep(i) := '1';
                                                 end if;
                                             end loop;
                                         else
-                                            v_keep := (others => '0');
+                                            -- remaining < 8: 4-bit comparison (not 16-bit)
                                             for i in 0 to 7 loop
-                                                if to_unsigned(i, 16) < v_remaining then
-                                                    v_keep(i) := '1';
+                                                if i >= v_start_lane then
+                                                    if to_unsigned(i - v_start_lane, 4) < v_rem_bytes then
+                                                        v_keep(i) := '1';
+                                                    end if;
                                                 end if;
                                             end loop;
                                         end if;
+                                        -- Bound by terminate
+                                        if terminate_in_word = '1' then
+                                            v_keep := v_keep and v_term_keep;
+                                        end if;
 
+                                        -- Popcount (tree)
                                         v_bytes_this := (others => '0');
                                         for i in 0 to 7 loop
                                             if v_keep(i) = '1' then
@@ -562,52 +675,8 @@ begin
                                         if v_keep /= "00000000" then
                                             wr_data <= xgmii_rxd;
                                             wr_keep <= v_keep;
-                                            wr_first <= '1';  -- First payload write
-                                            if payload_written + v_bytes_this >= payload_total or
-                                               terminate_in_word = '1' then
-                                                wr_last <= '1';
-                                                parse_state <= PS_DONE;
-                                            end if;
-                                            fifo_wr_en <= '1';
-                                            payload_written <= payload_written + v_bytes_this;
-                                        else
-                                            parse_state <= PS_DONE;
-                                        end if;
-                                    else
-                                        -- Partial: payload starts mid-word
-                                        v_start_lane := to_integer(payload_start_byte(2 downto 0));
-                                        v_keep := (others => '0');
-                                        if terminate_in_word = '1' then
-                                            for i in 0 to 7 loop
-                                                if i >= v_start_lane and i < terminate_lane then
-                                                    v_keep(i) := '1';
-                                                end if;
-                                            end loop;
-                                        else
-                                            for i in 0 to 7 loop
-                                                if i >= v_start_lane then
-                                                    v_keep(i) := '1';
-                                                end if;
-                                            end loop;
-                                        end if;
-
-                                        v_bytes_this := (others => '0');
-                                        for i in 0 to 7 loop
-                                            if v_keep(i) = '1' then
-                                                if payload_written + v_bytes_this < payload_total then
-                                                    v_bytes_this := v_bytes_this + 1;
-                                                else
-                                                    v_keep(i) := '0';
-                                                end if;
-                                            end if;
-                                        end loop;
-
-                                        if v_keep /= "00000000" then
-                                            wr_data <= xgmii_rxd;
-                                            wr_keep <= v_keep;
                                             wr_first <= '1';
-                                            if payload_written + v_bytes_this >= payload_total or
-                                               terminate_in_word = '1' then
+                                            if terminate_in_word = '1' or v_rem_full = '0' then
                                                 wr_last <= '1';
                                                 parse_state <= PS_DONE;
                                             else
@@ -615,6 +684,7 @@ begin
                                             end if;
                                             fifo_wr_en <= '1';
                                             payload_written <= payload_written + v_bytes_this;
+                                            remaining_r <= remaining_r - v_bytes_this;
                                         else
                                             parse_state <= PS_DONE;
                                         end if;
@@ -636,48 +706,40 @@ begin
 
                     when PS_PAYLOAD =>
                         -- Full payload words: write to FIFO
-                        v_remaining := payload_total - payload_written;
+                        -- Uses pre-decoded remaining_r variables (shared with header states)
 
                         if terminate_in_word = '1' then
-                            -- Terminate in this word: valid data only before terminate lane
-                            v_keep := (others => '0');
+                            -- Terminate: AND terminate mask with remaining mask
+                            v_keep := v_term_keep and v_rem_keep;
+                            -- Popcount for intersection
+                            v_bytes_this := (others => '0');
                             for i in 0 to 7 loop
-                                if i < terminate_lane and
-                                   to_unsigned(i, 16) < v_remaining then
-                                    v_keep(i) := '1';
+                                if v_keep(i) = '1' then
+                                    v_bytes_this := v_bytes_this + 1;
                                 end if;
                             end loop;
-                        elsif v_remaining >= 8 then
-                            -- Full word
+                        elsif v_rem_full = '1' then
+                            -- Full word: remaining >= 8
                             v_keep := "11111111";
+                            v_bytes_this := to_unsigned(8, 16);
                         else
-                            -- Last partial word (bounded by IP total length)
-                            v_keep := (others => '0');
-                            for i in 0 to 7 loop
-                                if to_unsigned(i, 16) < v_remaining then
-                                    v_keep(i) := '1';
-                                end if;
-                            end loop;
+                            -- Last partial word: use pre-decoded keep mask
+                            v_keep := v_rem_keep;
+                            v_bytes_this := resize(v_rem_bytes, 16);
                         end if;
-
-                        v_bytes_this := (others => '0');
-                        for i in 0 to 7 loop
-                            if v_keep(i) = '1' then
-                                v_bytes_this := v_bytes_this + 1;
-                            end if;
-                        end loop;
 
                         if v_keep /= "00000000" then
                             wr_data <= xgmii_rxd;
                             wr_keep <= v_keep;
                             wr_first <= '0';
-                            if payload_written + v_bytes_this >= payload_total or
+                            if v_rem_full = '0' or
                                terminate_in_word = '1' then
                                 wr_last <= '1';
                                 parse_state <= PS_DONE;
                             end if;
                             fifo_wr_en <= '1';
                             payload_written <= payload_written + v_bytes_this;
+                            remaining_r <= remaining_r - v_bytes_this;
                         else
                             -- No more payload bytes
                             parse_state <= PS_DONE;
@@ -697,6 +759,7 @@ begin
                             frame_is_ipv4 <= '0';
                             headers_valid <= '0';
                             payload_written <= (others => '0');
+                            remaining_r <= (others => '0');
                         else
                             parse_state <= PS_IDLE;
                         end if;

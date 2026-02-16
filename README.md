@@ -2,7 +2,7 @@
 
 This project is part of a complete end-to-end trading system:
 - **Main Repository:** [fpga-trading-systems](https://github.com/adilsondias-engineer/fpga-trading-systems)
-- **Project Number:** 34 of 35(for now, more to come)
+- **Project Number:** 34 of 38 (for now, more to come)
 - **Category:** FPGA Core 
 - **Dependencies:**  Project 33 - Custom 10GBASE-R PHY (VHDL)
 
@@ -288,6 +288,9 @@ Market Data (10GbE) -> [FPGA1: This Project] -> Aurora -> [FPGA2: Order Book] ->
 │   │   └── umdf_incremental_parser.vhd # B3 UMDF incremental message parser
 │   ├── xgmii/
 │   │   ├── mac_parser_xgmii.vhd        # 10GbE MAC/IP parser (word-based, wire-speed)
+│   │   ├── itch_echo_tx.vhd            # ITCH echo TX (echoes parsed messages over XGMII)
+│   │   ├── link_init_tx.vhd            # Link startup packets (announces FPGA on network)
+│   │   ├── raw_udp_echo_tx.vhd         # Raw UDP echo for loopback testing
 │   │   └── simple_udp_tx.vhd           # Test UDP packet generator
 │   ├── aurora/
 │   │   └── aurora_tx_wrapper.vhd       # Aurora TX to FPGA2
@@ -300,7 +303,7 @@ Market Data (10GbE) -> [FPGA1: This Project] -> Aurora -> [FPGA2: Order Book] ->
 │   │   └── uart_tx_simple.v            # Simple UART TX (115200 baud)
 │   └── integration/
 │       ├── fpga1_network_top.vhd       # FPGA1 top module
-│       └── market_data_mux.vhd         # Multi-protocol message multiplexer
+│       └── itch_message_mux.vhd        # ITCH message multiplexer (NASDAQ + ASX)
 ├── test/
 │   ├── tb_tcp_parser.vhd               # (planned)
 │   ├── tb_soupbintcp_handler.vhd       # (planned)
@@ -375,7 +378,7 @@ vivado -mode batch -source scripts/run_build.tcl
 
 ---
 
-## Current Hardware Status (2026-01-23)
+## Current Hardware Status (2026-02-16)
 
 ### Full Pipeline Verified
 All pipeline stages operational. Test with 1000 NASDAQ ITCH messages via 10GbE:
@@ -449,6 +452,8 @@ Most developers will not have 10GbE networking at home (2.5GbE is common at best
 |-----------|--------|-------|
 | MAC/IP Parser (XGMII) | **Complete** | Word-based architecture, wire-speed 10GbE payload extraction |
 | Simple UDP TX | **Complete** | Test packet generation, verified on Wireshark |
+| ITCH Echo TX | **Complete** | Echoes parsed ITCH fields back over 10GbE for validation |
+| Link Init TX | **Complete** | Announces FPGA presence on network at startup |
 | Protocol Demux | **Complete** | UDP/TCP routing by protocol field |
 | TCP Parser | **Complete** | Header parsing, flags, options handling |
 | SoupBinTCP Handler | **Complete** | ASX session layer, sequenced data |
@@ -501,6 +506,6 @@ The following components from Project 33 are required for full FPGA1 build:
 
 **Status:** Hardware Verified - WNS +0.922ns, 0 critical warnings, all clock domains constrained
 **Created:** January 2026
-**Last Updated:** February 12, 2026
+**Last Updated:** February 16, 2026
 **Author:** Adilson Dias
 **Target Board:** ALINX AX7325B (Kintex-7 XC7K325T-2FFG900I)

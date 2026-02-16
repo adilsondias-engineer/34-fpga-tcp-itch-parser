@@ -9,8 +9,8 @@
 # Primary Clocks
 # ==============================================================================
 
-# System clock (200 MHz) - already defined in pins.xdc via create_clock
-# create_clock -period 5.000 -name sys_clk [get_ports sys_clk_p]
+# System clock (200 MHz) 
+create_clock -period 5.000 -name sys_clk [get_ports sys_clk_p]
 
 # SFP+ Reference Clock (156.25 MHz)
 create_clock -period 6.400 -name sfp_refclk [get_ports sfp_refclk_p]
@@ -35,7 +35,7 @@ create_clock -period 3.103 -name gtx_txoutclk [get_pins sfp_gtx_inst/gtxe2_chann
 #   sfp_refclk (156.25 MHz) - SFP+ reference (QPLL input only)
 #   gtx_txoutclk (322.27 MHz) + MMCM-derived clocks (tx_usrclk, tx_usrclk2)
 set_clock_groups -asynchronous \
-    -group [get_clocks -include_generated_clocks sys_clk] \
+    -group [get_clocks sys_clk] \
     -group [get_clocks -include_generated_clocks sfp_refclk] \
     -group [get_clocks -include_generated_clocks gtx_txoutclk]
 
@@ -45,8 +45,8 @@ set_clock_groups -asynchronous \
 
 # Reset is asynchronous
 set_false_path -from [get_ports sys_rst_n]
-
 # Status outputs are slow/diagnostic
 set_false_path -to [get_ports led_*]
 set_false_path -to [get_ports sfp_tx_disable]
 set_false_path -to [get_ports uart_tx]
+

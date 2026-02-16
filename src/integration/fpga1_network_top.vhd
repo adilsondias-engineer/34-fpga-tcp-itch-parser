@@ -98,6 +98,7 @@ architecture rtl of fpga1_network_top is
     signal rx_clk           : std_logic;
     signal pcs_rst          : std_logic;
     signal reset_sync       : std_logic;
+    signal reset_pipe       : std_logic_vector(2 downto 0) := "111";  -- Sync reset pipeline
 
     -- PHY Status
     signal qpll_lock        : std_logic;
@@ -107,6 +108,7 @@ architecture rtl of fpga1_network_top is
     -- XGMII interface (from PHY)
     signal xgmii_rxd        : std_logic_vector(63 downto 0);
     signal xgmii_rxc        : std_logic_vector(7 downto 0);
+    signal xgmii_rx_valid   : std_logic;  -- PCS decoder valid (gearbox has new block)
     signal xgmii_txd        : std_logic_vector(63 downto 0);
     signal xgmii_txc        : std_logic_vector(7 downto 0);
 
@@ -152,6 +154,7 @@ architecture rtl of fpga1_network_top is
     signal nasdaq_timestamp : std_logic_vector(47 downto 0);
     signal nasdaq_order_ref : std_logic_vector(63 downto 0);
     signal nasdaq_stock_locate : std_logic_vector(15 downto 0);
+    signal nasdaq_tracking_number : std_logic_vector(15 downto 0);
     signal nasdaq_buy_sell  : std_logic;
     signal nasdaq_shares    : std_logic_vector(31 downto 0);
     signal nasdaq_price     : std_logic_vector(31 downto 0);
@@ -266,6 +269,24 @@ architecture rtl of fpga1_network_top is
     -- 25% duty: fan ON (low) for 2048/8192 counts
     constant FAN_DUTY_THRESHOLD : unsigned(12 downto 0) := to_unsigned(1024, 13);  -- 1024=12.5% ON -- to_unsigned(2048, 13);  -- 25% ON
 
+    -- Link Init TX (sends startup packets to establish link with switch)
+    signal link_init_txd      : std_logic_vector(63 downto 0);
+    signal link_init_txc      : std_logic_vector(7 downto 0);
+    signal link_init_done_int : std_logic;
+    signal link_init_active   : std_logic;
+
+    -- ITCH Echo TX (echoes parsed ITCH fields as UDP for debug)
+    signal itch_echo_txd      : std_logic_vector(63 downto 0);
+    signal itch_echo_txc      : std_logic_vector(7 downto 0);
+
+    -- Raw UDP Echo TX (echoes raw mac_parser bytes as UDP on port 5001)
+    signal raw_echo_txd       : std_logic_vector(63 downto 0);
+    signal raw_echo_txc       : std_logic_vector(7 downto 0);
+    signal raw_echo_active    : std_logic;
+    signal raw_echo_tx_count  : std_logic_vector(31 downto 0);
+
+    signal debug_uart_tx        : std_logic;   -- from gtx_debug_reporter
+
 begin
 
     ----------------------------------------------------------------------------
@@ -289,16 +310,20 @@ begin
     ----------------------------------------------------------------------------
     -- Note: sys_rst_n passed directly to GTX wrapper (which inverts internally)
 
-    -- Reset synchronizer (3-stage matching Project 33)
-    -- sys_rst_n is active-low: 0 = reset, 1 = running
-    process(tx_clk, sys_rst_n)
+    -- Reset synchronizer: 3-stage SYNCHRONOUS pipeline (no async set/reset)
+    -- CRITICAL: async preset on registers driving BRAM enables causes DRC REQP #1
+    -- warning and can corrupt FIFO BRAM contents. Using purely synchronous reset
+    -- eliminates async path to BRAM ENARDEN pin.
+    -- Initial value "111" ensures FPGA starts in reset after GSR.
+    process(tx_clk)
     begin
-        if sys_rst_n = '0' then
-            reset_sync <= '1';
-        elsif rising_edge(tx_clk) then
-            reset_sync <= '0';
+        if rising_edge(tx_clk) then
+            reset_pipe(0) <= not sys_rst_n;  -- Stage 1: may be metastable
+            reset_pipe(1) <= reset_pipe(0);  -- Stage 2: resolves metastability
+            reset_pipe(2) <= reset_pipe(1);  -- Stage 3: stable output
         end if;
     end process;
+    reset_sync <= reset_pipe(2);
     reset_int <= reset_sync;  -- For debug reporter
 
     -- CDC synchronizer: phy_ready is in drp_clk domain, need to sync to tx_clk
@@ -388,22 +413,74 @@ begin
         );
 
     ----------------------------------------------------------------------------
-    -- XGMII TX - Simple UDP Packet Generator
-    -- Sends periodic broadcast UDP "FPGA_HELLO" to 192.168.0.144:12345
-    -- This causes the switch to learn FPGA MAC and enables RX forwarding
+    -- Link Init TX (sends 5 startup packets to establish link with switch)
+    -- After init completes, ITCH Echo TX takes over the XGMII TX bus
     ----------------------------------------------------------------------------
-    udp_tx_inst : entity work.simple_udp_tx
+    link_init_inst : entity work.link_init_tx
         generic map (
             CLK_FREQ         => 161_130_000,
-            SEND_INTERVAL_MS => 1000
+            STARTUP_DELAY_MS => 100,
+            STARTUP_PACKETS  => 5,
+            PACKET_GAP_MS    => 50
         )
         port map (
-            clk       => tx_clk,
-            rst       => pcs_rst,
-            xgmii_txd => xgmii_txd,
-            xgmii_txc => xgmii_txc,
-            tx_count  => open
+            clk         => tx_clk,
+            rst         => pcs_rst,
+            phy_ready   => phy_ready_tx,
+            xgmii_txd   => link_init_txd,
+            xgmii_txc   => link_init_txc,
+            init_done   => link_init_done_int,
+            init_active => link_init_active,
+            tx_count    => open
         );
+
+    ----------------------------------------------------------------------------
+    -- ITCH Echo TX (echoes parsed ITCH fields back as UDP packets)
+    -- Sends parsed msg_type, symbol, price, shares, order_ref to port 5000
+    -- for Wireshark verification of ITCH parser correctness
+    ----------------------------------------------------------------------------
+    itch_echo_inst : entity work.itch_echo_tx
+        port map (
+            clk               => tx_clk,
+            rst               => pcs_rst,
+            itch_msg_valid    => nasdaq_msg_valid,
+            itch_msg_type     => nasdaq_msg_type,
+            itch_stock_locate => nasdaq_stock_locate,
+            itch_tracking_number => nasdaq_tracking_number,
+            itch_timestamp    => nasdaq_timestamp,
+            itch_order_ref    => nasdaq_order_ref,
+            itch_buy_sell     => nasdaq_buy_sell,
+            itch_shares       => nasdaq_shares,
+            itch_stock_symbol => nasdaq_stock_symbol,
+            itch_price        => nasdaq_price,
+            xgmii_txd         => itch_echo_txd,
+            xgmii_txc         => itch_echo_txc,
+            tx_active          => open,
+            tx_count           => open
+        );
+
+    ----------------------------------------------------------------------------
+    -- Raw UDP Echo TX (captures directly from XGMII RX, bypasses mac_parser)
+    -- Tests XGMII data integrity without FIFO/serializer in the path
+    ----------------------------------------------------------------------------
+    raw_echo_inst : entity work.raw_udp_echo_tx
+        port map (
+            clk              => tx_clk,
+            rst              => pcs_rst,
+            xgmii_rxd        => xgmii_rxd,
+            xgmii_rxc        => xgmii_rxc,
+            xgmii_rx_valid   => xgmii_rx_valid,
+            xgmii_txd        => raw_echo_txd,
+            xgmii_txc        => raw_echo_txc,
+            tx_active         => raw_echo_active,
+            tx_count          => raw_echo_tx_count
+        );
+
+    -- TX Mux: Link init > ITCH Echo (full parser pipeline)
+    xgmii_txd <= link_init_txd when link_init_done_int = '0' else
+                 itch_echo_txd;
+    xgmii_txc <= link_init_txc when link_init_done_int = '0' else
+                 itch_echo_txc;
 
     ----------------------------------------------------------------------------
     -- 10GBASE-R PCS - 64B/66B Encoding/Decoding (Project 33)
@@ -420,7 +497,7 @@ begin
             -- XGMII RX interface (to MAC parser)
             xgmii_rxd       => xgmii_rxd,
             xgmii_rxc       => xgmii_rxc,
-            xgmii_rx_valid  => open,
+            xgmii_rx_valid  => xgmii_rx_valid,
 
             -- GTX TX interface (to GTX transceiver)
             gtx_tx_data     => gtx_tx_data_int,
@@ -466,6 +543,7 @@ begin
             rst => pcs_rst,
             xgmii_rxd => xgmii_rxd,
             xgmii_rxc => xgmii_rxc,
+            xgmii_rx_valid => xgmii_rx_valid,
             ip_payload_valid => ip_payload_valid,
             ip_payload_data => ip_payload_data,
             ip_payload_start => ip_payload_start,
@@ -645,7 +723,7 @@ begin
             msg_error => open,
             add_order_valid => open,
             stock_locate => nasdaq_stock_locate,
-            tracking_number => open,
+            tracking_number => nasdaq_tracking_number,
             timestamp => nasdaq_timestamp,
             order_ref => nasdaq_order_ref,
             buy_sell => nasdaq_buy_sell,
@@ -772,6 +850,8 @@ begin
         end if;
     end process;
 
+    -- Corruption detector and itch_debug_uart removed -- not needed for raw echo debug
+
     ----------------------------------------------------------------------------
     -- GTX RX Activity Detector (for LED3 debug)
     -- LED3 lights when raw 66-bit blocks arrive from GTX (before descrambler)
@@ -862,8 +942,10 @@ begin
             itch_stock_locate     => last_itch_stock_locate,
             itch_price            => last_itch_price,
             -- UART output
-            uart_tx               => uart_tx
+            uart_tx               => debug_uart_tx
         );
+
+    uart_tx <= debug_uart_tx;
 
        -- =========================================================================
         -- FAN PWM: 24.4 kHz, 25% duty (low = ON)

@@ -334,6 +334,7 @@ begin
                                 end case;
 
                             elsif current_msg_type = MSG_ORDER_REPLACE then
+                                -- ITCH 5.0 Replace: orig_ref(11-18), new_ref(19-26), shares(27-30), price(31-34)
                                 case byte_counter is
                                     when 11 => original_order_ref_reg(63 downto 56) <= itch_msg_data;
                                     when 12 => original_order_ref_reg(55 downto 48) <= itch_msg_data;
@@ -343,22 +344,22 @@ begin
                                     when 16 => original_order_ref_reg(23 downto 16) <= itch_msg_data;
                                     when 17 => original_order_ref_reg(15 downto 8) <= itch_msg_data;
                                     when 18 => original_order_ref_reg(7 downto 0) <= itch_msg_data;
-                                    when 19 => new_shares_reg(31 downto 24) <= itch_msg_data;
-                                    when 20 => new_shares_reg(23 downto 16) <= itch_msg_data;
-                                    when 21 => new_shares_reg(15 downto 8) <= itch_msg_data;
-                                    when 22 => new_shares_reg(7 downto 0) <= itch_msg_data;
-                                    when 23 => new_price_reg(31 downto 24) <= itch_msg_data;
-                                    when 24 => new_price_reg(23 downto 16) <= itch_msg_data;
-                                    when 25 => new_price_reg(15 downto 8) <= itch_msg_data;
-                                    when 26 => new_price_reg(7 downto 0) <= itch_msg_data;
-                                    when 27 => new_order_ref_reg(63 downto 56) <= itch_msg_data;
-                                    when 28 => new_order_ref_reg(55 downto 48) <= itch_msg_data;
-                                    when 29 => new_order_ref_reg(47 downto 40) <= itch_msg_data;
-                                    when 30 => new_order_ref_reg(39 downto 32) <= itch_msg_data;
-                                    when 31 => new_order_ref_reg(31 downto 24) <= itch_msg_data;
-                                    when 32 => new_order_ref_reg(23 downto 16) <= itch_msg_data;
-                                    when 33 => new_order_ref_reg(15 downto 8) <= itch_msg_data;
-                                    when 34 => new_order_ref_reg(7 downto 0) <= itch_msg_data;
+                                    when 19 => new_order_ref_reg(63 downto 56) <= itch_msg_data;
+                                    when 20 => new_order_ref_reg(55 downto 48) <= itch_msg_data;
+                                    when 21 => new_order_ref_reg(47 downto 40) <= itch_msg_data;
+                                    when 22 => new_order_ref_reg(39 downto 32) <= itch_msg_data;
+                                    when 23 => new_order_ref_reg(31 downto 24) <= itch_msg_data;
+                                    when 24 => new_order_ref_reg(23 downto 16) <= itch_msg_data;
+                                    when 25 => new_order_ref_reg(15 downto 8) <= itch_msg_data;
+                                    when 26 => new_order_ref_reg(7 downto 0) <= itch_msg_data;
+                                    when 27 => new_shares_reg(31 downto 24) <= itch_msg_data;
+                                    when 28 => new_shares_reg(23 downto 16) <= itch_msg_data;
+                                    when 29 => new_shares_reg(15 downto 8) <= itch_msg_data;
+                                    when 30 => new_shares_reg(7 downto 0) <= itch_msg_data;
+                                    when 31 => new_price_reg(31 downto 24) <= itch_msg_data;
+                                    when 32 => new_price_reg(23 downto 16) <= itch_msg_data;
+                                    when 33 => new_price_reg(15 downto 8) <= itch_msg_data;
+                                    when 34 => new_price_reg(7 downto 0) <= itch_msg_data;
                                     when others => null;
                                 end case;
                             end if;

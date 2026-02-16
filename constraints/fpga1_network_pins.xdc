@@ -12,7 +12,6 @@ set_property PACKAGE_PIN AE10 [get_ports sys_clk_p]
 set_property PACKAGE_PIN AF10 [get_ports sys_clk_n]
 set_property IOSTANDARD DIFF_SSTL15 [get_ports sys_clk_p]
 set_property IOSTANDARD DIFF_SSTL15 [get_ports sys_clk_n]
-create_clock -period 5.000 -name sys_clk [get_ports sys_clk_p]
 
 # ==============================================================================
 # System Reset (active low, directly from key button)
@@ -93,13 +92,6 @@ set_property IOSTANDARD LVCMOS25 [get_ports uart_tx]
 # set_property PACKAGE_PIN Y22 [get_ports uart_rx]
 # set_property IOSTANDARD LVCMOS25 [get_ports uart_rx]
 
-# ==============================================================================
-# False Paths for Slow Control Signals
-# ==============================================================================
-set_false_path -to [get_ports led_*]
-set_false_path -to [get_ports sfp_tx_disable]
-set_false_path -to [get_ports uart_tx]
-set_false_path -from [get_ports sys_rst_n]
 
 # ==============================================================================
 # GTX Location Constraints (from working Project 33)

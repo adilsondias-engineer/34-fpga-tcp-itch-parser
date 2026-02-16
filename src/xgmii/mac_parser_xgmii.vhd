@@ -56,6 +56,7 @@ entity mac_parser_xgmii is
         -- XGMII RX interface (from PCS)
         xgmii_rxd           : in  std_logic_vector(63 downto 0);
         xgmii_rxc           : in  std_logic_vector(7 downto 0);
+        xgmii_rx_valid      : in  std_logic;  -- '1' when PCS has new block (gearbox valid)
 
         -- Parsed frame output (byte stream)
         ip_payload_valid    : out std_logic;
@@ -99,20 +100,20 @@ architecture rtl of mac_parser_xgmii is
     constant ETHERTYPE_IPV4 : std_logic_vector(15 downto 0) := x"0800";
 
     ----------------------------------------------------------------------------
-    -- Word FIFO (buffered payload: 64-bit data + 8-bit keep + first/last flags)
+    -- Word FIFO: hand-coded with registered reads for BRAM inference
+    -- Registered read (Xilinx SDP BRAM template) enables block RAM inference.
+    -- Serializer uses SS_LOAD state to absorb 1-cycle read latency.
+    -- Bit mapping: [73:10] = data(64), [9:2] = keep(8), [1] = first, [0] = last
     ----------------------------------------------------------------------------
     constant FIFO_DEPTH     : integer := 256;
     constant FIFO_AW        : integer := 8;
+    constant FIFO_WORD_W    : integer := 74;  -- 64 data + 8 keep + 1 first + 1 last
 
-    -- FIFO storage: separate arrays for each field (Vivado-friendly inference)
-    type fifo_data_arr_t is array(0 to FIFO_DEPTH-1) of std_logic_vector(63 downto 0);
-    type fifo_keep_arr_t is array(0 to FIFO_DEPTH-1) of std_logic_vector(7 downto 0);
-    type fifo_flag_arr_t is array(0 to FIFO_DEPTH-1) of std_logic;
+    type fifo_mem_t is array(0 to FIFO_DEPTH-1) of std_logic_vector(FIFO_WORD_W-1 downto 0);
+    signal fifo_mem : fifo_mem_t;
 
-    signal fifo_data        : fifo_data_arr_t;
-    signal fifo_keep        : fifo_keep_arr_t;
-    signal fifo_first       : fifo_flag_arr_t;
-    signal fifo_last        : fifo_flag_arr_t;
+    attribute ram_style : string;
+    attribute ram_style of fifo_mem : signal is "block";
 
     signal fifo_wr_ptr      : unsigned(FIFO_AW-1 downto 0) := (others => '0');
     signal fifo_rd_ptr      : unsigned(FIFO_AW-1 downto 0) := (others => '0');
@@ -128,7 +129,8 @@ architecture rtl of mac_parser_xgmii is
     signal wr_first         : std_logic := '0';
     signal wr_last          : std_logic := '0';
 
-    -- FIFO read data (to serializer)
+    -- FIFO registered read output (1-cycle latency, valid in SS_LOAD)
+    signal rd_word          : std_logic_vector(FIFO_WORD_W-1 downto 0) := (others => '0');
     signal rd_data          : std_logic_vector(63 downto 0);
     signal rd_keep          : std_logic_vector(7 downto 0);
     signal rd_first         : std_logic;
@@ -165,37 +167,6 @@ architecture rtl of mac_parser_xgmii is
     signal frame_active       : std_logic := '0';
     signal headers_valid      : std_logic := '0';  -- Set when IHL + total_len available
 
-    -- Fanout control for timing closure
- --   attribute MAX_FANOUT : integer;
-    --attribute MAX_FANOUT of remaining_r : signal is 16;
-
-  --  attribute MAX_FANOUT of fifo_data  : signal is 16;
-  --  attribute MAX_FANOUT of fifo_keep : signal is 16;
-  --  attribute MAX_FANOUT of fifo_first : signal is 16;
-  --  attribute MAX_FANOUT of fifo_last : signal is 16;
-
-   -- attribute MAX_FANOUT of fifo_wr_ptr : signal is 16;
-  --  attribute MAX_FANOUT of fifo_rd_ptr : signal is 16;
-  --  attribute MAX_FANOUT of fifo_count : signal is 16;
-  --  attribute MAX_FANOUT of fifo_wr_en : signal is 16;
-   -- attribute MAX_FANOUT of fifo_rd_en : signal is 16;
-   -- attribute MAX_FANOUT of fifo_empty : signal is 16;
-   -- attribute MAX_FANOUT of fifo_full : signal is 16;
-
-    -- FIFO write data (from parser)
-   -- attribute MAX_FANOUT of wr_data : signal is 16;
-  ---  attribute MAX_FANOUT of wr_keep : signal is 16;
-  --  attribute MAX_FANOUT of wr_first  : signal is 16;
-  --  attribute MAX_FANOUT of wr_last : signal is 16;
-
-    -- FIFO read data (to serializer)
-  --  attribute MAX_FANOUT of rd_data  : signal is 16;
-  --  attribute MAX_FANOUT of rd_keep  : signal is 16;
- --   attribute MAX_FANOUT of rd_first : signal is 16;
- --   attribute MAX_FANOUT of rd_last  : signal is 16;
-
-
-
     -- Terminate detection
     signal terminate_in_word  : std_logic;
     signal terminate_lane     : integer range 0 to 7;
@@ -203,7 +174,7 @@ architecture rtl of mac_parser_xgmii is
     ----------------------------------------------------------------------------
     -- Byte serializer (reads from FIFO, outputs 1 byte/clock)
     ----------------------------------------------------------------------------
-    type serial_state_t is (SS_IDLE, SS_OUTPUT);
+    type serial_state_t is (SS_IDLE, SS_LOAD, SS_OUTPUT);
     signal serial_state     : serial_state_t := SS_IDLE;
     signal sr_data          : std_logic_vector(63 downto 0) := (others => '0');
     signal sr_keep          : std_logic_vector(7 downto 0) := (others => '0');
@@ -257,11 +228,11 @@ begin
     fifo_empty <= '1' when fifo_count = 0 else '0';
     fifo_full  <= '1' when fifo_count >= FIFO_DEPTH else '0';
 
-    -- FIFO async read
-    rd_data  <= fifo_data(to_integer(fifo_rd_ptr));
-    rd_keep  <= fifo_keep(to_integer(fifo_rd_ptr));
-    rd_first <= fifo_first(to_integer(fifo_rd_ptr));
-    rd_last  <= fifo_last(to_integer(fifo_rd_ptr));
+    -- Registered read output extraction (rd_word set in FIFO process)
+    rd_data  <= rd_word(73 downto 10);
+    rd_keep  <= rd_word(9 downto 2);
+    rd_first <= rd_word(1);
+    rd_last  <= rd_word(0);
 
     -- Terminate detection in current XGMII word
     process(xgmii_rxd, xgmii_rxc)
@@ -285,7 +256,7 @@ begin
         if rising_edge(clk) then
             if rst = '1' then
                 start_det_cnt <= (others => '0');
-            else
+            elsif xgmii_rx_valid = '1' then
                 start_found := false;
                 for i in 0 to 7 loop
                     if xgmii_rxc(i) = '1' and
@@ -311,7 +282,7 @@ begin
             if rst = '1' then
                 frame_cnt <= (others => '0');
                 frame_in_progress <= '0';
-            else
+            elsif xgmii_rx_valid = '1' then
                 saw_start := false;
                 saw_term := false;
                 for i in 0 to 7 loop
@@ -336,11 +307,17 @@ begin
     end process;
 
     ----------------------------------------------------------------------------
-    -- FIFO write/read pointer management
+    -- Payload FIFO: hand-coded Simple Dual-Port BRAM
+    -- Write + registered read in single process = Xilinx SDP BRAM template.
+    -- Registered read: rd_word gets fifo_mem(fifo_rd_ptr) on each clock edge.
+    -- After asserting fifo_rd_en, data is available in rd_word on the NEXT cycle.
     ----------------------------------------------------------------------------
     process(clk)
     begin
         if rising_edge(clk) then
+            -- Registered read (BRAM output register, outside reset for inference)
+            rd_word <= fifo_mem(to_integer(fifo_rd_ptr));
+
             if rst = '1' then
                 fifo_wr_ptr <= (others => '0');
                 fifo_rd_ptr <= (others => '0');
@@ -348,14 +325,11 @@ begin
             else
                 -- Write
                 if fifo_wr_en = '1' and fifo_full = '0' then
-                    fifo_data(to_integer(fifo_wr_ptr))  <= wr_data;
-                    fifo_keep(to_integer(fifo_wr_ptr))  <= wr_keep;
-                    fifo_first(to_integer(fifo_wr_ptr)) <= wr_first;
-                    fifo_last(to_integer(fifo_wr_ptr))  <= wr_last;
+                    fifo_mem(to_integer(fifo_wr_ptr)) <= wr_data & wr_keep & wr_first & wr_last;
                     fifo_wr_ptr <= fifo_wr_ptr + 1;
                 end if;
 
-                -- Read
+                -- Read pointer advance
                 if fifo_rd_en = '1' and fifo_empty = '0' then
                     fifo_rd_ptr <= fifo_rd_ptr + 1;
                 end if;
@@ -442,6 +416,12 @@ begin
                     end if;
                 end loop;
 
+                -- CRITICAL: Only process XGMII data when PCS has a new block.
+                -- The 64b66b gearbox drops valid ~1 in 33 clocks (66/64 ratio).
+                -- During gaps, the decoder holds stale data on xgmii_rxd/rxc.
+                -- Without this guard, stale words get processed as new data,
+                -- causing 8-byte word duplication (~30% of packets).
+                if xgmii_rx_valid = '1' then
                 case parse_state is
                     when PS_IDLE =>
                         frame_active <= '0';
@@ -775,6 +755,7 @@ begin
                         frame_active <= '0';
                     end if;
                 end loop;
+                end if;  -- xgmii_rx_valid
             end if;
         end if;
     end process;
@@ -805,18 +786,20 @@ begin
                 case serial_state is
                     when SS_IDLE =>
                         if fifo_empty = '0' then
-                            -- Load word from FIFO
-                            sr_data <= rd_data;
-                            sr_keep <= rd_keep;
-                            sr_first <= rd_first;
-                            sr_last <= rd_last;
+                            -- Initiate BRAM read (data available next cycle)
                             fifo_rd_en <= '1';
-
-                            -- Find first valid lane
-                            sr_lane <= next_valid_lane(rd_keep, 0);
-                            sr_first_byte <= rd_first;
-                            serial_state <= SS_OUTPUT;
+                            serial_state <= SS_LOAD;
                         end if;
+
+                    when SS_LOAD =>
+                        -- rd_word now has valid data (registered BRAM output)
+                        sr_data <= rd_data;
+                        sr_keep <= rd_keep;
+                        sr_first <= rd_first;
+                        sr_last <= rd_last;
+                        sr_lane <= next_valid_lane(rd_keep, 0);
+                        sr_first_byte <= rd_first;
+                        serial_state <= SS_OUTPUT;
 
                     when SS_OUTPUT =>
                         if sr_lane <= 7 then
@@ -851,14 +834,10 @@ begin
                                         out_end <= '1';
                                         serial_state <= SS_IDLE;
                                     else
-                                        -- Load next word from FIFO
+                                        -- Need next word: initiate BRAM read
                                         if fifo_empty = '0' then
-                                            sr_data <= rd_data;
-                                            sr_keep <= rd_keep;
-                                            sr_first <= rd_first;
-                                            sr_last <= rd_last;
                                             fifo_rd_en <= '1';
-                                            sr_lane <= next_valid_lane(rd_keep, 0);
+                                            serial_state <= SS_LOAD;
                                         else
                                             -- FIFO empty, wait
                                             serial_state <= SS_IDLE;
